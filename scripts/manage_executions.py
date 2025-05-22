@@ -13,7 +13,7 @@ from oanda_api.openTrade import get_open_trades
 from oanda_api.check_price import get_price
 from oanda_api.execution import close_trade
 
-MAX_ACTIVE_EXECUTIONS = 100
+MAX_ACTIVE_EXECUTIONS = 0
 LOG_DIR = "logs"
 LOG_PATH = os.path.join(LOG_DIR, "manage-exec.log")
 

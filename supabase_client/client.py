@@ -1,4 +1,5 @@
 """
+file: supabase_client/client.py
 Supabase Client (using centralized config)
 ────────────────────────────────────────────
 Initializes the Supabase client using credentials from config.py.

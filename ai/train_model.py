@@ -1,186 +1,158 @@
-"""
-file: ai/train_model.py
-───────────────────────────
-Fetches historical FX data + signals, simulates TP/SL outcome,
-trains a classifier, saves the model, and registers metadata.
-"""
-
 import os
 import sys
-from datetime import datetime
 import json
 import joblib
 import pandas as pd
+from datetime import datetime
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
 
-# 🔧 Ensure project root
+# Optional model imports
+try:
+    from xgboost import XGBClassifier
+except ImportError:
+    XGBClassifier = None
+
+try:
+    from keras.models import Sequential
+    from keras.layers import Dense, LSTM, Input
+    from keras.callbacks import EarlyStopping
+except ImportError:
+    Sequential = LSTM = None
+
+# 🔧 Ensure project root is accessible
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from kafka_core.config import ADMIN_USER_ID , USER_ID
+from kafka_core.config import ADMIN_USER_ID
 from supabase_client.client import supabase
 
 # Constants
-MODEL_PATH = "ai/models/signal_rf.pkl"
-PIP = 0.0001
+MODEL_PATH = "ai/models/signal_model.pkl"
+ACTIVE_MODEL_PATH = "ai/active_model.json"
+MODEL_TYPE = os.getenv("MODEL_TYPE", "rf")  # Options: rf, xgb, lstm
+STRATEGY_ID = "af31b3cd-cdaa-49d9-af1b-78f1119a9548"  # UUID from strategies table
 
-# 1. Load latest model_version for strategy/params
-latest_model = supabase.table("model_versions")\
-    .select("id, strategy_id, parameters")\
-    .eq("user_id", ADMIN_USER_ID)\
-    .order("created_at",desc=False)\
-    .limit(1).execute().data
+print("📁 Loading signals and executions from Supabase...")
 
-if not latest_model:
-    raise Exception("❌ No model_versions found. Please create a strategy first.")
+# Fetch signal data
+signals = (
+    supabase.table("signals")
+    .select("id, symbol, signal_type, confidence, market_snapshot, time_generated")
+    .eq("user_id", ADMIN_USER_ID)
+    .execute()
+    .data
+)
 
-meta = latest_model[0]
-strategy_id = meta["strategy_id"]
-model_version_id = meta["id"]
-params = meta["parameters"]
+# Fetch executions joined with signals
+executions = (
+    supabase.table("executions")
+    .select("id, signal_id, closed_at, pl, signals(symbol, time_generated)")
+    .execute()
+    .data
+)
 
-TP = params.get("TP", 10)
-SL = params.get("SL", 5)
-LOOKAHEAD_SEC = params.get("lookahead_sec", 600)
-features = params.get("features", ["bid", "delta_ask"])
+# Merge and build DataFrame
+rows = []
+for ex in executions:
+    signal = ex.get("signals")
+    closed_at = ex.get("closed_at")
+    time_generated = signal.get("time_generated") if signal else None
 
-# ✅ Fetch strategy details for visibility
-strategy = supabase.table("strategies")\
-    .select("name, description, type, hyperparameters")\
-    .eq("id", strategy_id)\
-    .limit(1)\
-    .execute().data
-
-if not strategy:
-    raise Exception(f"❌ Strategy not found for ID: {strategy_id}")
-
-print(f"🧠 Loaded Strategy: {strategy[0]['name']} ({strategy[0]['type']})")
-print(f"📋 Description: {strategy[0].get('description', 'No description')}")
-print(f"⚙️  Hyperparameters: {strategy[0].get('hyperparameters')}")
-
-# ✅ Save active model info immediately
-active_model_path = "ai/active_model.json"
-os.makedirs(os.path.dirname(active_model_path), exist_ok=True)
-
-with open(active_model_path, "w") as f:
-    json.dump({
-        "strategy_id": strategy_id,
-        "model_version_id": model_version_id
-    }, f)
-
-print(f"📁 Active model version preloaded from existing: {active_model_path}")
-
-# 2. Fetch signals for this strategy
-signals = supabase.table("signals")\
-    .select("symbol, signal_type, market_snapshot, time_generated")\
-    .eq("user_id", USER_ID)\
-    .eq("strategy_id", strategy_id)\
-    .execute().data
-
-labeled = []
-dates = []
-
-# 3. Simulate TP/SL outcomes
-for s in signals:
-    try:
-        snap = s["market_snapshot"]
-        symbol = s["symbol"]
-        entry_time = datetime.fromisoformat(s["time_generated"].replace("Z", "+00:00"))
-        entry_price = snap["bid"] if s["signal_type"] == "sell" else snap["ask"]
-        dates.append(entry_time)
-
-        md_resp = supabase.table("market_data")\
-            .select("bid, ask, timestamp")\
-            .eq("symbol", symbol)\
-            .eq("user_id", USER_ID)\
-            .gt("timestamp", entry_time.isoformat())\
-            .order("timestamp",desc=False)\
-            .limit(100)\
-            .execute().data
-
-        outcome = "flat"
-        for md in md_resp:
-            dt = datetime.fromisoformat(md["timestamp"].replace("Z", "+00:00"))
-            if (dt - entry_time).total_seconds() > LOOKAHEAD_SEC:
-                break
-            price = md["bid"] if s["signal_type"] == "sell" else md["ask"]
-            if s["signal_type"] == "buy":
-                if price >= entry_price + TP * PIP:
-                    outcome = "win"
-                    break
-                if price <= entry_price - SL * PIP:
-                    outcome = "loss"
-                    break
-            else:
-                if price <= entry_price - TP * PIP:
-                    outcome = "win"
-                    break
-                if price >= entry_price + SL * PIP:
-                    outcome = "loss"
-                    break
-
-        labeled.append({
-            "bid": snap["bid"],
-            "delta_ask": snap["ask"] - snap["bid"],
-            "label": outcome
-        })
-
-    except Exception as e:
-        print(f"⚠️ Failed to label signal: {e}")
+    if not signal or not time_generated or not closed_at:
         continue
 
-# 4. Train model
-df = pd.DataFrame(labeled)
+    rows.append({
+        "symbol": signal["symbol"],
+        "time_generated": time_generated,
+        "closed_at": closed_at,
+        "pnl": ex["pl"]
+    })
+
+df = pd.DataFrame(rows)
+
+# 🥹 Validate data
 if df.empty:
-    raise Exception("❌ Not enough data to train.")
+    print("⚠️ No valid executions after filtering. Dumping raw data:")
+    print(executions[:5])
+    raise ValueError("No valid executions found with timestamps.")
 
-X = df.drop(columns=["label"])
-y = df["label"]
+# 🧬 Feature engineering
+df["hour_of_day"] = pd.to_datetime(df["time_generated"]).dt.hour
+df = df.sort_values(by="time_generated")
+df["rolling_mean"] = df["pnl"].rolling(window=5, min_periods=1).mean()
+df["volatility"] = df["pnl"].rolling(window=5, min_periods=1).std().fillna(0)
 
-model = RandomForestClassifier(n_estimators=100, random_state=42)
-model.fit(X, y)
-accuracy = model.score(X, y)
+# 🎯 Target label: profit/loss threshold
+TARGET_THRESHOLD = 0.5
+df["target"] = (df["pnl"] >= TARGET_THRESHOLD).astype(int)
 
-# 5. Save model
-os.makedirs("ai/models", exist_ok=True)
-joblib.dump(model, MODEL_PATH)
-print("✅ Model trained and saved.")
+# Split features/target
+features = ["hour_of_day", "rolling_mean", "volatility"]
+X = df[features]
+y = df["target"]
 
-# 6. Save dataset entry
-time_range = f"[{min(dates).isoformat()}, {max(dates).isoformat()}]"
-dataset_resp = supabase.table("datasets").insert({
-    "name": f"Dataset {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-    "time_range": time_range,
-    "notes": f"TP={TP}, SL={SL}, Lookahead={LOOKAHEAD_SEC}s",
-    "user_id": ADMIN_USER_ID
+if len(df) < 2:
+    raise ValueError(f"🚫 Not enough samples to train. Only {len(df)} found.")
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# 🔬 Train model
+print(f"🔬 Training model type: {MODEL_TYPE.upper()}...")
+
+if MODEL_TYPE == "rf":
+    model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+    model.fit(X_train, y_train)
+
+elif MODEL_TYPE == "xgb" and XGBClassifier:
+    model = XGBClassifier(n_estimators=100, max_depth=5, learning_rate=0.1, use_label_encoder=False, eval_metric='logloss')
+    model.fit(X_train, y_train)
+
+elif MODEL_TYPE == "lstm" and Sequential:
+    X_lstm = X.values.reshape((X.shape[0], 1, X.shape[1]))
+    y_lstm = y.values
+    model = Sequential([
+        Input(shape=(1, X.shape[1])),
+        LSTM(32, activation='relu'),
+        Dense(1, activation='sigmoid')
+    ])
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    model.fit(X_lstm, y_lstm, epochs=10, verbose=1, callbacks=[EarlyStopping(patience=2)])
+else:
+    raise ValueError(f"Unsupported or unavailable model type: {MODEL_TYPE}")
+
+# 📂 Save model
+os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+if MODEL_TYPE in ["rf", "xgb"]:
+    joblib.dump(model, MODEL_PATH)
+    print("📂 Model saved to:", MODEL_PATH)
+else:
+    model.save(MODEL_PATH.replace(".pkl", ".h5"))
+    print("📂 LSTM model saved to:", MODEL_PATH.replace(".pkl", ".h5"))
+
+# 📝 Log model version
+model_version_response = supabase.table("model_versions").insert({
+    "user_id": ADMIN_USER_ID,
+    "strategy_id": STRATEGY_ID,
+    "model_type": MODEL_TYPE,
+    "features_used": features,
+    "created_at": datetime.utcnow().isoformat(),
+    "version": f"v{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
 }).execute()
 
-if not dataset_resp.data:
-    raise Exception("❌ Dataset insert succeeded but returned no ID.")
-dataset_id = dataset_resp.data[0]["id"]
+model_version_id = model_version_response.data[0]["id"]
 
-# 7. Save new model_version
-model_version_resp = supabase.table("model_versions").insert({
-    "strategy_id": strategy_id,
-    "version": f"v{datetime.now().strftime('%Y%m%d%H%M')}",
-    "accuracy": accuracy,
-    "trained_on": dataset_id,
-    "parameters": {
-        "TP": TP,
-        "SL": SL,
-        "lookahead_sec": LOOKAHEAD_SEC,
-        "features": features
-    },
-    "user_id": ADMIN_USER_ID
-}).execute()
-if not model_version_resp.data:
-    raise Exception("❌ Model version insert succeeded but returned no ID.")
-model_version_id = model_version_resp.data[0]["id"]
-active_model_path = "ai/active_model.json"
-os.makedirs(os.path.dirname(active_model_path), exist_ok=True)
-with open(active_model_path, "w") as f:
-    json.dump({
-        "strategy_id": strategy_id,
-        "model_version_id": model_version_id
-    }, f)
+# 📋 Save metadata
+model_metadata = {
+    "strategy_id": STRATEGY_ID,
+    "model_version_id": model_version_id,
+    "description": f"Trained on signals using TP=10, SL=5, Lookahead=600s | Model: {MODEL_TYPE.upper()}",
+    "parameters": {"TP": 10, "SL": 5, "lookahead_sec": 600},
+    "trained_at": datetime.utcnow().isoformat(),
+    "features_used": features
+}
 
-print(f"📁 Active model version written to {active_model_path}")
+with open(ACTIVE_MODEL_PATH, "w") as f:
+    json.dump(model_metadata, f, indent=2)
+
+print("📋 Metadata saved to:", ACTIVE_MODEL_PATH)
+print("✅ Training complete.")

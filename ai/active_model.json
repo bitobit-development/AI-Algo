@@ -1,1 +1,16 @@
-{"strategy_id": "af31b3cd-cdaa-49d9-af1b-78f1119a9548", "model_version_id": "7cb44f42-5262-4ab6-8304-faf1afde9e42"}
+{
+  "strategy_id": "af31b3cd-cdaa-49d9-af1b-78f1119a9548",
+  "model_version_id": "5ce04a42-fb3b-4ce1-a596-1511d5ab1971",
+  "description": "Trained on signals using TP=10, SL=5, Lookahead=600s | Model: RF",
+  "parameters": {
+    "TP": 10,
+    "SL": 5,
+    "lookahead_sec": 600
+  },
+  "trained_at": "2025-05-22T10:42:46.125912",
+  "features_used": [
+    "hour_of_day",
+    "rolling_mean",
+    "volatility"
+  ]
+}
