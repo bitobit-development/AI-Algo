@@ -12,7 +12,7 @@ load_dotenv()
 # ────── Kafka Config ──────
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP")  # e.g. 52.90.93.152:9093
 KAFKA_TOPICS = {
-    "market_data": "fx_market_data",
+    "market_data": "market_data",
     "signals": "ai_trade_signals",
     "executions": "executions",
     "alerts": "alerts",
@@ -26,6 +26,7 @@ ENV_MODE = os.getenv("ENV_MODE", "dev").lower()
 DEV_USER_ID = os.getenv("DEV_USER_ID")
 PROD_USER_ID = os.getenv("PROD_USER_ID")
 USER_ID = DEV_USER_ID if ENV_MODE == "dev" else PROD_USER_ID
+ADMIN_USER_ID = "0346e0c7-fed8-4d33-bb9a-89f67976b22b"
 
 # ────── Elasticsearch Config ──────
 ELASTIC_URL = os.getenv("ELASTIC_URL", "http://localhost:9200")
