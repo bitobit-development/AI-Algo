@@ -18,9 +18,7 @@ load_dotenv()
 
 account_id = get_account_id()
 
-headers = {
-    "Authorization": f"Bearer {OANDA_API_KEY}"
-}
+headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
 
 
 def stream_prices(symbols=None):
@@ -34,23 +32,22 @@ def stream_prices(symbols=None):
 
     instruments_param = ",".join(symbols)
     url = f"{STREAM_URL}/v3/accounts/{account_id}/pricing/stream"
-    params = {
-        "instruments": instruments_param
-    }
+    params = {"instruments": instruments_param}
 
-    # print(f"📡 Streaming prices for {instruments_param} from OANDA...")
+    print(f"📡 Streaming prices for {instruments_param} from OANDA...")
 
     try:
-        with requests.get(url, headers=headers, params=params, stream=True) as response:
+        with requests.get(url, headers=headers, params=params,
+                          stream=True) as response:
             for line in response.iter_lines():
                 if line:
                     decoded = line.decode("utf-8")
-                    # print(f"📨 Raw line: {decoded}")
+                    #print(f"📨 Raw line: {decoded}")
 
                     try:
                         data = json.loads(decoded)
                     except json.JSONDecodeError:
-                        # print("⚠️ Failed to parse JSON")
+                        #print("⚠️ Failed to parse JSON")
                         continue
 
                     if data.get("type") == "HEARTBEAT":
