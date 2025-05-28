@@ -68,10 +68,16 @@ def insert_tick(data: dict):
         logger.error('❌ Failed to insert tick: %s', e)
 
 # Main loop reading from Kafka
-def main():
+def main(status_flags=None):
+    if status_flags is None:
+        status_flags = {"tick_consumer": True}
     consumer = create_consumer()
     try:
         while True:
+            if not status_flags.get("tick_consumer", True):
+                logger.info("⏸️ tick_consumer paused")
+                time.sleep(1)
+                continue
             msg = consumer.poll(1.0)
             if msg is None:
                 continue

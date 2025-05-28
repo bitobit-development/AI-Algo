@@ -61,10 +61,16 @@ def is_market_open(instrument: str) -> bool:
     return now >= start or now <= end
 
 # Stream ticks for one instrument to Kafka
-def stream_to_kafka(instrument: str):
+def stream_to_kafka(instrument: str, status_flags=None):
+    if status_flags is None:
+        status_flags = {"producer": True}
     logger.info(f"📡 Stream thread started for {instrument}")
     try:
         for tick in stream_prices(instrument):
+            if not status_flags.get("producer", True):
+                logger.info(f"⏸️ Producer paused for {instrument}")
+                time.sleep(1)
+                continue
             if shutdown_event.is_set():
                 break
             # Process only price ticks (with bid/ask)
@@ -105,7 +111,9 @@ def stream_to_kafka(instrument: str):
         logger.info(f"🛑 Stream thread exiting for {instrument}")
 
 # Launch streams for all active pairs only once
-def start():
+def start(status_flags=None):
+    if status_flags is None:
+        status_flags = {"producer": True}
     logger.info("🚀 Launching OANDA stream producer...")
     threads = []
     for inst in MAJOR_CURRENCY_PAIRS:
@@ -114,7 +122,7 @@ def start():
             continue
         t = threading.Thread(
             target=stream_to_kafka,
-            args=(inst,),
+            args=(inst, status_flags),
             name=f"Stream-{inst}",
             daemon=True
         )

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>📊 AI Trading Dashboard</title>
+  <meta http-equiv="refresh" content="5">
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      margin: 2em;
+      background: #f9f9f9;
+      color: #333;
+    }
+    h2, h3, h4 { margin-top: 1.5em; }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin-bottom: 2em;
+      background: white;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 0.75em;
+      text-align: left;
+    }
+    .green { color: green; }
+    .red { color: red; }
+    .controls a {
+      margin-right: 1em;
+    }
+    form {
+      margin: 2em 0;
+    }
+  </style>
+</head>
+<body>
+  <h2>📊 AI Trading Dashboard</h2>
+  <p><strong>System Time:</strong> {{ now }}</p>
+
+  <table>
+    <tr><th>Service</th><th>Status</th><th>Last Seen</th><th>Actions</th></tr>
+    {% for name, alive in statuses.items() %}
+    <tr>
+      <td>{{ name }}</td>
+      <td class="{{ 'green' if alive else 'red' }}">{{ 'running' if alive else 'stopped' }}</td>
+      <td>{{ last_seen[name] }}</td>
+      <td class="controls">
+        <a href="{{ url_for('restart_service', service=name) }}">🔁 Restart</a>
+        <a href="{{ url_for('stop_service', service=name) }}">⛔ Stop</a>
+      <br><code>{{ debug_status[name] }}</code></td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <form method="get" action="{{ url_for('index') }}">
+    <label for="q">Filter actions:</label>
+    <input type="text" name="q" value="{{ request.args.q or '' }}">
+    <button type="submit">Filter</button>
+    <a href="{{ url_for('download') }}">📥 Download CSV</a>
+  </form>
+
+  <h3>🧾 Logs per Service (Last 50)</h3>
+{% for name, loglist in log_by_service.items() %}
+  <details open>
+    <summary><strong>{{ name }}</strong></summary>
+    <table>
+      <tr><th>Time</th><th>Action</th><th>Source</th></tr>
+      {% for row in loglist %}
+      <tr>
+        <td>{{ row.timestamp[:19].replace('T', ' ') }}</td>
+        <td>
+          {% if row.action == 'Stopped' %}🟥{% elif 'Restart' in row.action %}🔁{% elif row.action == 'Startup' %}🟩{% endif %}
+          {{ row.action }}
+        </td>
+        <td>{{ row.source }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </details>
+{% endfor %}
+</body>
+</html>
